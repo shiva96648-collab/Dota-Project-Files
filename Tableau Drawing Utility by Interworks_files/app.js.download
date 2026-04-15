@@ -1,0 +1,1455 @@
+
+/*
+											   
+Tableau Drawing Utility
+Interworks
+by Dave Hart 2014
+
+*/
+
+// ***********************************************************************************
+// Model Declarations
+
+var AppOptions = Backbone.Model.extend({  
+							defaults:{
+								title:"Tableau Drawing Utility",
+								version:"v0.4.4",
+								mode:"image",
+								}
+							});
+
+var ScaleOptions = Backbone.Model.extend({
+							defaults:{
+								left:0, 
+								top:1, 
+								right:1, 
+								bottom:0,
+								width:null,
+								height:null
+								},
+							isCustomScale: function() {													
+								return !(this.get("left") == 0 
+											&& this.get("top") == this.get("height")
+											&& this.get("right") == this.get("width")
+											&& this.get("bottom") == 0);
+								}
+							});
+							
+var CanvasOptions = Backbone.Model.extend({
+							defaults: {
+								mouseX:0,
+								mouseY:0,
+								snap:true,
+								snapX:null,
+								snapY:null,
+								align:false,
+								alignX:null,
+								alignY:null,
+								hitTolerance:10,
+								guide:false,
+								width:"0",
+								height:"0",
+								shapes:null,
+								drawMode:"points"
+								},
+							initialize:function(){
+							}
+});
+									
+var Shape = Backbone.Model.extend({
+							defaults: {
+								name:"shape",
+								path: null,
+								polygon: null,
+								points: null,
+								mapShape:null
+							},
+							initialize:function() {
+								this.set("points", new Points());
+								this.set("path", new jxPolyline(new Array(), blkPen));
+								this.set("polygon", new jxPolygon(new Array(), blkPen, gryBrush));
+								this.get("points").on('add', this.pointsChanged, this);
+								this.get("points").on('remove', this.pointsChanged, this);
+								this.get("points").on('change', this.pointsChanged, this);
+							},
+							pointsChanged:function(model) {
+								console.log('points collection has changed');
+								this.trigger('change',this);
+							}
+});
+
+var Point = Backbone.Model.extend({
+							defaults: {
+								name:"point",
+								x:0,
+								y:0,
+								circle:null
+							}
+});
+
+var Shapes = Backbone.Collection.extend({
+							model:Shape
+});
+
+var Points = Backbone.Collection.extend({
+							model:Point
+});
+
+var ImageSpecification = Backbone.Model.extend({
+							defaults: {
+								url:"",
+								width:0,
+								height:0,
+								opacity:1
+							}
+});
+
+var CursorInformation = Backbone.Model.extend({
+							defaults: {
+								previousX:null,
+								previousY:null,
+								currentX:0,
+								currentY:0
+								}
+});
+
+var MapSetup = Backbone.Model.extend({
+							defaults: {
+								mapProviders: null,
+								mapProvider:"cloudmade",
+								mapKey:"AIzaSyCNgGNcVUb4y7C9L40XUHBCm5fdTGayDPo",
+								centre:new google.maps.LatLng(51.5113,-0.1047),
+								zoom:12,
+								shapes:null,
+								maxGeocodeResults:5,
+								drawMode:"points"
+								},
+							initialize:function(){
+								this.set("mapProviders", {'openlayers':'Open Layers'
+												, 'googlev3':'Google'
+												, 'cloudmade':'Cloudmade'
+												});
+								this.set("shapes",new Shapes());
+							}
+});
+
+var ClipboardSetup = Backbone.Model.extend({
+							defaults:{
+								moviePath:"assets\\ZeroClipboard.swf",
+								format:"csv"
+							}
+});
+
+var OutputOptions = Backbone.Model.extend({
+						defaults:{
+							format:"csv",
+							scale:null,
+							mode:"image",
+							shapes:null
+						}, 
+						initialize:function() {
+						}
+});
+
+var InstructionsDialogSetup = Backbone.Model.extend({
+						defaults: {
+							showAtStartup:true
+							}
+});
+
+var HistoricAction = Backbone.Model.extend({
+						defaults:{
+							description: null, 
+							dragEvent: false, 
+							shapeEvent:false, 
+							closed: false, //Indicates if a shape was closed
+							shapeIndex: NaN, 
+							pointIndex: NaN,
+							previousPos: null
+						}
+});
+
+var History = Backbone.Collection.extend({
+							model:HistoricAction
+});
+
+// ************************************************************************************
+// Views
+
+// app
+
+var AppView = Backbone.View.extend({ 
+						el:$('body'),
+						initialize:function(){
+							
+							// initialize models
+							// perhaps should be part of the app model
+							this.canvasSetup = new CanvasOptions();
+							this.cursorInfo = new CursorInformation();
+							this.imageSpec = new ImageSpecification();
+							this.scaleSetup = new ScaleOptions();
+							this.mapSetup = new MapSetup();
+							this.clipboardSetup = new ClipboardSetup();
+							this.outputOptions = new OutputOptions();
+							this.outputOptions.set("scale", this.scaleSetup);
+							this.dialogSetup = new InstructionsDialogSetup();
+							
+							var shapes = new Shapes([{ name:'first shape' }]);							
+							var history = new History();
+							this.canvasSetup.set("shapes",shapes);
+							this.canvasSetup.set("history", history);
+							this.outputOptions.set("shapes",shapes);
+							
+							// create and maintain references to the sub views in the app
+							this.dialog = new InstructionsDialogView({model:this.dialogSetup});
+							this.drawOpts = new CanvasDrawingOptionsView({model:this.canvasSetup});
+							this.imgLoader = new ImageLoaderView({model:this.imageSpec});
+							this.scale = new ScaleView({model:this.scaleSetup});
+							this.canvas = new CanvasView({model:this.canvasSetup});
+							this.bgImage = new BackgroundImageView({model:this.imageSpec});
+							this.coords = new CoordView({model:this.cursorInfo});
+							this.clipboard = new ClipboardView({model:this.clipboardSetup});
+							this.output = new OutputView({model:this.outputOptions});
+							
+							// this is the google maps implementation
+							this.map = new GoogleMapView({model:this.mapSetup});
+							this.mapSearch = new GoogleMapLocationView({model:this.mapSetup});
+							this.mapDrawOpts = new MapDrawingOptionsView({model:this.mapSetup});
+							this.listenTo(this.mapSearch, 'locationChanged', function(location,viewport) { if (viewport) { this.map.setViewport(viewport); } else { this.map.setLocation(location) } });
+							this.listenTo(this.mapDrawOpts, 'clearMapRequested', this.map.clearMap.bind(this.map));
+							this.listenTo(this.mapDrawOpts, 'undoMapRequested', this.map.undoMap.bind(this.map));
+							
+							// open streetmap via mapstraction and cloudbase is available
+							// this.map = new MapView({model:this.mapSetup});
+							// this.mapSearch = new MapLocationView({model:this.mapSetup});
+							// this.mapDrawOpts = new MapDrawingOptionsView({model:this.mapSetup});
+							
+							
+							// hook up events on the views to coordinate actions
+							this.listenTo(this.imgLoader, 'imageRequested', this.updateImageUrl);
+							this.listenTo(this.canvas, 'currentPositionChanged', function(x,y) { this.cursorInfo.set("currentX",x); this.cursorInfo.set("currentY",(this.imageSpec.get("height")-y)); });
+							this.listenTo(this.canvas, 'newPointAdded', function(x,y) { this.cursorInfo.set("previousX",x); this.cursorInfo.set("previousY",(this.imageSpec.get("height")-y)); });
+							this.listenTo(this.drawOpts, 'clearCanvas', function() { this.canvas.clearCanvas(); });
+							this.listenTo(this.drawOpts, 'undoCanvas', function() { this.canvas.undoCanvas(); });
+							this.listenTo(this.outputOptions, 'change:format', function() { this.clipboardSetup.set("format",this.outputOptions.get("format")) });
+							this.listenTo(this.scaleSetup, 'change', function() { this.output.createOutput(); });
+							
+							// perform the initial rendering of the view
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+							
+							},
+						events: { 
+							"change #sidebar-mode input[type=radio]" : "changeAppMode",
+							"click #show-instructions-link" : "showInstructions",
+							"drop #workspace" : "droppedImage"
+							},
+						render:function(){
+							//this.$('#title-tagline').html(this.model.get("title") + ' ' + this.model.get("version"));
+							this.$('background-url-value').val(this.model.get("url"));
+							if (this.model.get("mode") == "image") {
+								this.$('.image').show();
+								this.$('.map').hide();
+							} else {
+								this.$('.image').hide();
+								this.$('.map').show();
+							}
+							return this;
+							},
+						updateImageUrl:function(imageUrl) {
+							var i = new Image();
+							i.onload = this.imageLoaded.bind(this,i);
+							i.src = imageUrl;
+						},
+						updateImageSpec:function(img) {
+							this.imageSpec.set({"url":img.src, "width":img.width, "height":img.height });
+							this.canvasSetup.set({"width":img.width, "height":img.height});
+							this.scaleSetup.set({ "top":parseInt(img.height),
+												"left":0,
+												"right":parseInt(img.width),
+												"bottom":0,
+												"width":parseInt(img.width),
+												"height":parseInt(img.height)
+												});
+							},
+						changeAppMode:function() {
+							if (debug) { console.log('changing app mode'); }
+							if ($("#background-type-map").prop("checked")){
+								this.model.set("mode","map"); 
+								this.map.setUpMap(); 
+								this.outputOptions.set("shapes", this.mapSetup.get("shapes"));
+								this.outputOptions.set("mode", "map");
+							}
+							else {
+								this.model.set("mode","image");
+								this.outputOptions.set("shapes", this.canvasSetup.get("shapes"));
+								this.outputOptions.set("mode", "image");
+							}
+							if (debug) { console.log('changed app mode to : ' + this.model.get("mode")); }
+							},
+						showInstructions:function() {
+							this.dialog.showDialog(); 
+							},
+						imageLoaded:function(img) {
+								this.updateImageSpec(img);
+								// hide drag drop prompt
+								$('#workspace').css('background-image', 'none');
+								$('#dragdrop-text').hide();	
+							},
+						droppedImage:function(e) {
+							e.preventDefault();
+							
+							var file = e.originalEvent.dataTransfer.files[0],
+								el = $(e.currentTarget),
+								acceptedTypes = {
+									'image/png': true,
+									'image/jpeg': true,
+									'image/gif': true
+								};
+
+							el.removeClass('hover');							
+							if (acceptedTypes[file.type] === true) {
+								var reader = new FileReader();
+								reader.onload = function (event) {
+									console.log(event.target.result);
+									this.updateImageUrl(event.target.result);
+								}.bind(this);
+								reader.readAsDataURL(file);	    
+							}  else {
+								//$('#holder').empty();
+								//holder.innerHTML += '<p class="error">Please upload a supported file type.</p>';
+							}
+							}
+});
+	
+var InstructionsDialogView = Backbone.View.extend({
+						el:$('#dialog-holder'),
+						initialize:function() {
+							this.render();
+							},
+						events: {
+							"change #check-show-instructions" : "toggleShowAtStartup",
+							"click #close-instructions" : "closeDialog"
+							},
+						render:function() {
+							this.$("#check-show-instructions").attr("checked",this.model.get("showAtStartup"));
+							if (this.model.get("showAtStartup"))
+								this.$el.show();
+							},
+						toggleShowAtStartup:function() {
+							this.model.set("showAtStartup", this.$("#check-show-instructions").attr("checked"));
+							},
+						showDialog:function() {
+							this.$el.show();
+							},
+						closeDialog:function() {
+							this.$el.hide();
+							}
+});
+
+// image drawing
+
+var ImageLoaderView = Backbone.View.extend({
+						el:$('#sidebar-image-properties'),
+						initialize:function(){
+							this.urlInput = this.$("#background-url-value");
+							this.render();
+							},
+						events: {
+							"click #background-load-button": "loadImage",
+							"keypress #background-url-value": "loadOnEnter",
+							"change #background-opacity": "opacityChanged"
+							},
+						render:function(){
+							this.$("#background-url-value").val(this.model.get("url"));
+							this.$("#background-opacity").val(this.model.get("opacity"));
+							},
+						loadOnEnter:function(e) {
+							if (e.keyCode == 13) { this.loadImage(); }
+							},
+						loadImage:function(){
+							if (!this.urlInput.val()) { return; }
+							// check here for a blank function e.g. blank(100%,100%)
+							this.trigger('imageRequested', this.urlInput.val());
+							console.log('load image from the url ' + this.urlInput.val());
+							},
+						opacityChanged:function(){
+							console.log('opacity has changed');
+							this.model.set("opacity", this.$("#background-opacity").val());
+							}
+});
+
+var BackgroundImageView = Backbone.View.extend({
+						el:$('#drawing-background-container'),
+						initialize:function(){
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+						},
+						events: {
+						},
+						render:function(){
+							console.log('rendering background-image');
+							this.$el.height(this.model.get("height"));
+							this.$el.width(this.model.get("width"));
+							this.$('#background-image').attr("src",this.model.get("url"));	
+							this.$('#background-image').css({ opacity: this.model.get("opacity") });
+						},
+						fireImageReady:function(){
+							this.trigger("imageReady");
+						}
+});
+
+var CanvasDrawingOptionsView = Backbone.View.extend({
+						el:$('#sidebar-drawing-options'),
+						initialize:function() {
+							this.drawingModeSelector = this.$('#drawing-mode-selector');
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+							},
+						render:function() {
+							this.drawingModeSelector.val(this.model.get("drawMode"));
+							this.$("#check-snap").attr("checked",this.model.get("snap"));
+							this.$("#check-align").attr("checked",this.model.get("align"));
+							this.$("#check-guide").attr("checked",this.model.get("guide"));
+							},
+						events: {
+							"change #drawing-mode-selector": "changeMode",
+							"change #check-snap" : "toggleSnap",
+							"change #check-align" : "toggleAlign",
+							"change #check-guide" : "toggleGuide",
+							"click #button-clear-canvas" : "clearCanvas",
+							"click #button-undo-canvas" : "undoCanvas"
+							},
+						changeMode:function(){
+							if (debug) { console.log('change drawing mode');}
+							this.model.set("drawMode", this.drawingModeSelector.val());
+							this.trigger('drawModeChanged', this.drawingModeSelector.val());
+							},
+						toggleSnap:function() {
+							if (debug) { console.log('toggle snap'); }
+							this.model.set("snap", !this.model.get("snap"));
+							},
+						toggleAlign:function() {
+							if (debug) { console.log('toggle align'); }
+							this.model.set("align", !this.model.get("align"));
+							},
+						toggleGuide:function() {
+							if (debug) { console.log('toggle guide'); }
+							this.model.set("guide", !this.model.get("guide"));
+							},
+						clearCanvas: function () {
+							if (debug) { console.log('requesting clear canvas'); }
+							if(this.model.get("history").length > 0) {
+								var r = confirm("All progress will be permanently deleted and cannot be recovered.");
+								if (r) {
+									this.trigger('clearCanvas');
+								}
+							}
+						},
+						undoCanvas:function() {
+							if (debug) { console.log('requesting undo canvas'); }
+							this.trigger('undoCanvas');
+							}
+});
+
+var CanvasView = Backbone.View.extend({
+						el:$("#drawing-canvas"),
+						initialize: function() { 
+							if (debug) { console.log('canvas view initialising'); }
+							this.cancelClick = false;
+							this.drag = false;
+							this.dragCircle = null;
+							this.guideVisible = false;
+							this.setUpGuideline();
+							this.currentShape = this.model.get("shapes").at(0);
+							this.listenTo(this.model,'change:height',this.render);
+							this.listenTo(this.model,'change:width',this.render);
+							this.listenTo(this.model,'change:drawMode',this.setGraphicsVisibility);
+							this.listenTo(this.model,'change:align',this.setAlignOption);
+							this.listenTo(this.model,'change:snap',this.setSnapOption);
+							this.listenTo(this.model,'change:guide',this.setGuidelineOption);
+							this.render();
+							},
+						events: { 
+							"mousemove": "canvasMouseMove",
+							"mouseout": "canvasMouseOut",
+							"click": "canvasClick"
+							},
+						render: function() {
+							if (debug) { console.log('canvas rendering'); }
+							this.$el.height(this.model.get("height"));
+							this.$el.width(this.model.get("width"));
+							return this;
+							},
+						canvasMouseMove: function(evt) {
+						
+								var off = $("#workspace").offset();
+								var x = evt.pageX - this.el.offsetLeft - off.left + $("#workspace").scrollLeft();
+								var y = evt.pageY - this.el.offsetTop - off.top + $("#workspace").scrollTop();
+								this.model.set("mouseX",x);
+								this.model.set("mouseY",y);
+								
+								// check for alignment
+								if (this.model.get("align")) {
+									var ht = this.model.get("hitTolerance");
+
+									if (Math.abs(x-this.guide.fromPoint.x)<ht) {
+										this.model.set("alignX",this.guide.fromPoint.x);
+									} else { 
+										this.model.set("alignX", null);
+									}
+									
+									if (Math.abs(y-this.guide.fromPoint.y)<ht) {
+										this.model.set("alignY",this.guide.fromPoint.y);
+									} else { 
+										this.model.set("alignY", null);
+									}
+								}
+								
+								// draw the guide line
+								// but only if it's already visible
+								if (this.guideVisible) {
+									if (this.model.get("snap") && this.model.get("snapX") != null && this.model.get("snapY") != null) {
+										this.guide.toPoint.x = this.model.get("snapX");
+										this.guide.toPoint.y = this.model.get("snapY");
+									} else if (this.model.get("align") && (this.model.get("alignX") != null || this.model.get("alignY") != null)) {
+										this.guide.toPoint.x = (this.model.get("alignX") != null) ? this.model.get("alignX") : x; 
+										this.guide.toPoint.y = (this.model.get("alignY") != null) ? this.model.get("alignY") : y; 
+									} else {
+										this.guide.toPoint.x = x;
+										this.guide.toPoint.y = y;
+									}
+									this.guide.draw(graphics);
+								}
+								
+								this.trigger('currentPositionChanged',x,y);
+								if (this.drag && this.dragCircle != null) { 
+								
+									this.dragCircle.center.x = x; 
+									this.dragCircle.center.y = y; 
+									this.dragCircle.draw(graphics);
+									
+									var shape = this.findShapeByCircle(this.dragCircle);
+									shape.get("path").draw(graphics);
+									shape.get("polygon").draw(graphics);
+									this.setGraphicsVisibility();
+									
+								}
+								
+							},
+						canvasMouseOut: function(evt) {
+						},
+						canvasClick: function(evt) {
+						
+								if (this.cancelClick) { this.cancelClick = false; return; }
+								var x = this.model.get("mouseX");
+								var y = this.model.get("mouseY");
+								var sx = this.model.get("snapX");
+								var sy = this.model.get("snapY");
+								var ax = this.model.get("alignX");
+								var ay = this.model.get("alignY");
+								
+								// sub in the snap values if necessary
+								if (this.model.get("snap")) {
+									if (sx != null) { x = sx; }
+									if (sy != null) { y = sy; }
+								}
+								
+								// sub in the align values (unless we've already snapped somewhere)
+								if (this.model.get("align") && sx==null && sy==null) {
+									if (ax != null) { x = ax; }
+									if (ay != null) { y = ay; }
+								}
+								
+								// set the guideline
+								// if we're clicking on the canvas we can assume
+								// that we need to show the guide as it is only hidden
+								// initially and after a shape close
+								this.guide.fromPoint.x = x;
+								this.guide.fromPoint.y = y;
+								this.guide.show();
+								this.setGuidelineVisibility(true);
+								
+								this.addPointToCurrentShape(x,y);
+								
+								this.model.get("history").push(new HistoricAction(
+									{
+										description: "Added Point",										
+										shapeEvent: true,
+										shapeIndex: this.model.get("shapes").length - 1,
+										pointIndex: this.currentShape.get("points").length - 1
+									}));
+								
+								// raise the event								
+								this.trigger('newPointAdded',x,y);
+								console.log('new point added');
+							
+							},
+						addPointToCurrentShape: function(x,y) {
+							var p = new jxPoint(x,y);
+							this.currentShape.get("path").points.push(p);
+							this.currentShape.get("polygon").points.push(p);
+							this.currentShape.get("polygon").draw(graphics);
+							this.currentShape.get("path").draw(graphics);
+							var c = this.addCircle(p);
+							this.setGraphicsVisibility();
+							if (this.currentShape.get("points").length == 0) {
+								c.pen = gryPen;
+								c.draw(graphics);
+							}
+							this.currentShape.get("points").add([{name:"", x:x, y:y, circle:c}]);
+							},
+						addCircle: function(point) {
+							var c = new jxCircle(point, 4, null, blkBrush);
+							c.addEventListener("click", this.circleClick.bind(this));
+							c.addEventListener("mouseup", this.circleMouseUp.bind(this));
+							c.addEventListener("mousedown", this.circleMouseDown.bind(this));
+							c.addEventListener("mouseover", this.circleMouseOver.bind(this));
+							c.addEventListener("mouseout", this.circleMouseOut.bind(this));
+							c.draw(graphics);
+							return c;
+						},
+						circleClick: function(evt,circle) {
+						
+							if (debug) { console.log('clicked circle with centre ' + circle.center.x.toString() + ',' + circle.center.y.toString()); }
+							
+							if (this.dragCircle != null) {
+								// this click has happened after a drag operation
+								this.cancelClick = true;
+								this.dragCircle = null;
+								return;
+							}
+							
+							var circles = this.currentShape.get("points").pluck("circle");
+							if (circle == _.first(circles)) {
+								console.log('clicked first circle in current shape');
+								this.addPointToCurrentShape(circle.center.x, circle.center.y);
+
+								this.model.get("history").push(new HistoricAction(
+									{
+										description: "Added Point and closed",
+										shapeEvent: true,
+										shapeIndex: this.model.get("shapes").length - 1,
+										pointIndex: this.currentShape.get("points").length - 1,
+										closed: true
+									}));
+
+								this.closeCurrentShape();
+
+								this.cancelClick = true;
+							} else if (circle == _.last(circles)) {
+								console.log('clicked last circle in current shape');
+								this.closeCurrentShape();
+
+								this.model.get("history").push(new HistoricAction(
+									{
+										description: "Closed",
+										shapeEvent: true,
+										closed: true
+									}));
+
+								this.cancelClick = true;
+							}			
+								
+							}, 
+						circleMouseDown: function(evt,circle) {
+							if (debug) { console.log('mouse down on circle with centre ' + circle.center.x.toString() + ',' + circle.center.y.toString()); };
+							this.drag = true;
+							this.dragCircle = circle;
+							}, 
+						circleMouseUp: function(evt,circle) {
+							if (debug) { console.log('mouse up on circle with centre ' + circle.center.x.toString() + ',' + circle.center.y.toString()); };
+							var pt = this.findPointByCircle(this.dragCircle);
+							if (pt != null) {
+								if (pt.get("x") != this.dragCircle.center.x || pt.get("y") != this.dragCircle.center.y) {
+									if (debug) { console.log('point has been dragged to new location'); }
+									
+									var sp = this.findShapeByCircle(this.dragCircle);
+									var allShapes = this.model.get("shapes");
+									var spIndex = allShapes.indexOf(sp);
+									var points = sp.get("points");
+									var pIndex = points.indexOf(pt);
+									
+									this.model.get("history").push(new HistoricAction(
+									{
+										description: "Dragging Point",									
+										dragEvent: true,										
+										shapeIndex: spIndex,
+										pointIndex: pIndex,
+										previousPos: {"x": pt.get("x"), "y": pt.get("y")}
+									}));
+									
+									if(allShapes.length === spIndex + 1 && points.length === pIndex + 1)
+									{
+										this.guide.fromPoint.x = this.dragCircle.center.x;
+										this.guide.fromPoint.y = this.dragCircle.center.y;
+									}
+								
+									pt.set({"x":this.dragCircle.center.x, "y":this.dragCircle.center.y});
+								} else {
+									// we don't need to retain the reference to the dragged circle
+									this.dragCircle = null;
+								}
+							}
+							this.drag = false;
+							}, 
+						circleMouseOver: function(evt,circle) {
+							if (evt.target.style.cursor != "cursor") { evt.target.style.cursor = "pointer"; }
+							circle.brush = redBrush;
+							circle.draw(graphics);
+							this.model.set({snapX:circle.center.x, snapY:circle.center.y});
+							}, 
+						circleMouseOut: function(evt,circle) {
+							circle.brush = blkBrush;
+							circle.draw(graphics);
+							this.model.set({snapX:null, snapY:null});
+							},
+						setGraphicsVisibility: function() {
+							this.model.get("shapes").each(this.setShapeGraphicVisibility.bind(this));
+							},
+						setShapeGraphicVisibility: function(shape,index,shapes) {
+								if (this.model.get("drawMode") == "paths") {
+									shape.get("path").show();
+									shape.get("polygon").hide();
+								}
+								else if (this.model.get("drawMode") == "polygons") {
+									if (shape == this.currentShape) {
+										shape.get("path").show();
+										shape.get("polygon").hide();
+									} else {
+										shape.get("path").hide();
+										shape.get("polygon").show();
+									}
+								}
+								else {
+									shape.get("path").hide();
+									shape.get("polygon").hide();
+								}
+							},
+						clearCanvas: function(retainHistory) {						
+							if(!retainHistory)
+								this.model.get("history").reset();
+
+							// remove all the graphics objects
+							var sCount = graphics.getShapesCount();
+							for(var s=sCount-1;s>=0;s--)
+								graphics.getShape(s).remove();
+							
+							// clear down each shape
+							this.model.get("shapes").each(this.destroyShape);
+							this.model.get("shapes").reset();
+							
+							// create a new shape
+							this.model.get("shapes").add(new Shape());
+							this.currentShape = this.model.get("shapes").at(0);
+							
+							this.setGuidelineVisibility(false);
+							
+							// the output needs hooking back up again.
+							
+							},
+						undoCanvas: function () {
+							if (debug) { console.log("Undoing last canvas action"); }
+							var lastAction = this.model.get("history").pop();
+
+							if (lastAction) {
+								if (debug) { console.log("Undoing '" + lastAction.get("description") + "'"); }
+
+								var shapeIndex = lastAction.get("shapeIndex");
+								var pointIndex = lastAction.get("pointIndex");
+
+								var shapes = this.model.get("shapes");
+
+								//Make a simple copy of all shapes and points, except the undone point
+								var simpleShapes = [];
+								for (var si = 0; si < shapes.length; si++) {
+									var points = shapes.at(si).get("points");
+									var simplePoints = [];
+									for (var pi = 0; pi < points.length; pi++) {
+										if (si === shapeIndex && pi === pointIndex) {
+											if (lastAction.get("shapeEvent")) {
+												if (debug) { console.log("Undoing placement of [" + shapeIndex + "," + pointIndex + "]"); }
+												continue;
+											}
+
+											if (lastAction.get("dragEvent")) {
+												if (debug) { console.log("Undoing transformation of [" + shapeIndex + "," + pointIndex + "]"); }
+												simplePoints.push({ "pointIndex": pi, "x": lastAction.get("previousPos").x, "y": lastAction.get("previousPos").y });
+												continue;
+											}
+										}
+										var center = points.at(pi).get("circle").center;
+										simplePoints.push({ "pointIndex": pi, "x": center.x, "y": center.y });
+									}
+
+									if (simplePoints.length > 0) {
+										simpleShapes.push({ "shapeIndex": si, "points": simplePoints });
+									}
+								}
+
+								//Completely clear all shapes/points/graphics
+								this.clearCanvas(true);
+
+								//Rebuild every point and shape
+								var lastPoint;
+								for (var si = 0; si < simpleShapes.length; si++) {
+									if (si > 0) {
+										this.closeCurrentShape();
+									}
+									//Add all points to current shape
+									var simplePoints = simpleShapes[si].points;
+									for (var pi = 0; pi < simplePoints.length; pi++) {
+										var simplePoint = simplePoints[pi];
+										this.addPointToCurrentShape(simplePoint.x, simplePoint.y);
+										lastPoint = simplePoint;
+									}
+								}
+
+								var historyWithShapeEvents = this.model.get("history").where({ shapeEvent: true });
+								if (historyWithShapeEvents.length > 0 && _.last(historyWithShapeEvents).get("closed")) {
+									this.closeCurrentShape();
+								}
+								else {
+									this.setGuidelineVisibility(true);
+								}
+
+								if (lastPoint) {
+									//guide line stuff
+									this.guide.fromPoint.x = lastPoint.x;
+									this.guide.fromPoint.y = lastPoint.y;
+								}
+								else {
+									this.setGuidelineVisibility(false);
+								}
+
+							}
+
+						},
+						destroyShape: function(shape, index) {
+							console.log('destroying shape ' + index);
+							shape.get("points").each(function(point,index) { console.log('destroying point ' + index); });
+							shape.get("points").reset();
+							}, 
+						setUpGuideline: function() {
+							if (debug) { console.log('guideline set up '); }
+							this.guide = new jxLine(new jxPoint(0,0), new jxPoint(0,0), gryPen);
+							this.guide.draw(graphics);
+							this.setGuidelineVisibility(false);
+							},
+						setGuidelineVisibility: function(show) {
+							if (show && this.model.get("guide")) {
+								this.guide.show();
+							} else {
+								this.guide.hide();
+							}
+							this.guideVisible = (show && this.model.get("guide"));
+							},
+						setGuidelineOption: function() { 
+							if (debug) { console.log('setting guideline option'); }
+							if (this.currentShape.get("points").length > 0) {
+								this.setGuidelineVisibility(this.model.get("guide"));
+								}
+							},
+						setSnapOption: function() {
+							if (debug) { console.log('setting snap option'); }
+							},
+						setAlignOption: function() {
+							if (debug) { console.log('setting align option'); }
+							},
+						closeCurrentShape:function() {
+							var newShape = new Shape();
+							this.model.get("shapes").add(newShape);
+							this.currentShape = newShape;	
+							this.setGraphicsVisibility();
+							this.setGuidelineVisibility(false);
+							},
+						findShapeByCircle:function(circle) {
+							var shapes = this.model.get("shapes");
+							for (var s=0;s<shapes.length;s++) {
+								var found = shapes.at(s).get("points").findWhere({ circle:circle });
+								if (found != null)
+									return shapes.at(s);
+								}
+							},
+						findPointByCircle:function(circle) {
+							var shapes = this.model.get("shapes");
+							for (var s=0;s<shapes.length;s++) {
+								var found = shapes.at(s).get("points").findWhere({ circle:circle });
+								if (found != null)
+									return found;
+							}
+						}
+});
+		
+var CoordView = Backbone.View.extend({
+						el:$('#cursor-information'),
+						initialize:function() { 
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+							},
+						render: function() {
+						
+							var x = this.model.get("currentX");
+							var y = this.model.get("currentY");
+							var x2 = this.model.get("previousX");
+							var y2 = this.model.get("previousY");
+							var a = 0;
+							if (x2 != null && y2 != null)
+								a = (Math.atan2(x-x2,y-y2) * 180 / Math.PI).toFixed(1);
+							
+							this.$("#cursor-x").text(x);
+							this.$("#cursor-y").text(y);
+							this.$("#cursor-angle").text(a);
+							
+						}
+});
+
+var ScaleView = Backbone.View.extend({
+						el:$('#sidebar-scale'),
+						initialize:function() { 
+							this.listenTo(this.model,'change',this.render);
+							this.render(); 
+							},
+						events: {
+							"change .coordinate": "changeCoordinate"
+							},
+						render: function() {
+							console.log('rendering scale view');
+							$("#coordinate-left").val(this.model.get("left"));
+							$("#coordinate-right").val(this.model.get("right"));
+							$("#coordinate-top").val(this.model.get("top"));
+							$("#coordinate-bottom").val(this.model.get("bottom"));
+						},
+						changeCoordinate:function(evt) {
+							console.log('changing a coordinate');
+							this.model.set({
+											"left": 	parseInt($("#coordinate-left").val()),
+											"right":	parseInt($("#coordinate-right").val()),
+											"top":		parseInt($("#coordinate-top").val()),
+											"bottom":	parseInt($("#coordinate-bottom").val())
+											});
+							this.trigger('scaleChanged');
+						}
+});
+
+// map provision
+
+var MapProviderView = Backbone.View.extend({
+						el:$('#sidebar-map-provider'),
+						initialize:function() {
+							console.log('init map provider view');
+							this.render();
+							},
+						events: {
+							"change #map-provider-value": "changeProvider",
+							},
+						render:function() {
+							if (debug) { console.log('rendering map provider view'); }
+							$.each(this.model.get("mapProviders"),function(key,value) { 
+											this.$("#map-provider-value").append("<option value='" + key + "'>" + value + "</option>"); 
+											}.bind(this));
+							},
+						changeProvider:function() {
+							if (debug) { console.log('change map provider to ' + this.$('#map-provider-value').val());}
+							this.model.set("mapProvider",this.$('#map-provider-value').val());
+							}
+});
+
+var MapView = Backbone.View.extend({ 
+						el:$('#map-control'),
+						initialize:function() { 
+							this.map = null;
+							this.currentShape = null;
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+							},
+						render: function() {
+							console.log('map view render');
+							if (this.map != null) { this.setUpMap(); }
+							},
+						setUpMap: function() { 
+						
+							var provider = this.model.get("mapProvider");
+							if (this.map == null) {
+								this.map = new mxn.Mapstraction(this.el, provider);
+								this.map.setCenterAndZoom(new mxn.LatLonPoint(51.5113,-0.1047), 12);
+								this.map.addControls({pan:true, zoom:'large'});
+								this.map.enableScrollWheelZoom();
+								this.map.addEventListener("click",this.mapClick.bind(this));
+								this.map.addEventListener("changeZoom", this.mapChangeZoom.bind(this));
+								this.map.addEventListener("endPan", this.mapEndPan.bind(this));
+							} 
+								
+							},
+						mapClick: function(latlon) {
+						
+							console.log('map clicked at ' + latlon.lat + ',' + latlon.lon);
+							
+							var latitude = latlon.lat;
+							var longitude = latlon.lon;
+							var shape = new Shape();
+							this.model.get("shapes").add(shape);
+							shape.get("points").add([{x:longitude, y:latitude}]);
+							
+							this.map.addMarkerWithData(new mxn.Marker(latlon), { });
+							
+							},
+						mapChangeZoom:function() {
+							if (debug) { console.log('changed zoom'); }
+							},
+						mapEndPan:function() {
+							if (debug) { console.log('map panned'); }
+							}
+
+		});
+
+var MapLocationView = Backbone.View.extend({
+						el:$('#map-search-value'),
+						initialize:function() {	
+								this.geocoder = new mxn.Geocoder(this.model.get("mapProvider"), this.updateResults.bind(this));
+							},
+						events:{
+							"keypress": "submitGeocode"
+							},
+						render:function() {
+							},
+						submitGeocode:function(e) {
+							if (e.keyCode == 13) {
+								this.geocoder.geocode(this.$el.val(),this.model.get("maxGeocodeResults"));
+							}							
+							},
+						updateResults:function(locations) {
+							for (var l=0; l<locations.length; l++) {
+								console.log(locations[l]);
+							}
+							},
+						updateLocation:function() {
+							if (debug) { console.log('place changed'); }
+							this.trigger('locationChanged');
+							}
+});
+
+var MapDrawingOptionsView = Backbone.View.extend({
+						el:$("#sidebar-map-drawing-tools"),
+						initialize:function() {
+							this.drawingModeSelector = this.$("#map-drawing-mode-selector");
+							this.listenTo(this.model, 'change', this.render);
+							},
+						events: {
+							"change #map-drawing-mode-selector": "changeMode",
+							"click #button-clear-map" : "clearMap",
+							"click #button-undo-map" : "undoMap"
+							},
+						render: function() {
+							this.drawingModeSelector.val(this.model.get("drawMode"));
+							},
+						changeMode:function() {
+							if (debug) { console.log('change drawing mode');}
+							this.model.set("drawMode", this.drawingModeSelector.val());
+							this.trigger('drawModeChanged', this.drawingModeSelector.val());
+							}, 
+						clearMap:function() {
+							if (debug) { console.log('clear map requested'); }
+							if(this.model.get("shapes").length > 0) {
+								var r = confirm("All progress will be permanently deleted and cannot be recovered.");
+								if (r) {
+									this.trigger("clearMapRequested");
+								}
+							}
+							}, 
+						undoMap:function() {
+							if (debug) { console.log('undo map requested'); }
+							this.trigger("undoMapRequested");
+							}
+})
+
+var GoogleMapView = Backbone.View.extend({
+						el:$('#map-control'),
+						initialize:function() { 
+							this.map = null;
+							this.drawingManager = null;
+							this.listenTo(this.model, 'change', this.render);
+							this.render();
+							},
+						render: function() {
+							console.log('map view render');
+							if (this.map != null) { this.setUpMap(); }
+							},
+						setUpMap: function() { 
+							if (this.map == null) {
+									this.map = new google.maps.Map(this.el);
+									this.map.setCenter(this.model.get("centre"));
+									this.map.setZoom(this.model.get("zoom"));
+							
+									this.drawingManager = new google.maps.drawing.DrawingManager({
+											drawingMode: google.maps.drawing.OverlayType.MARKER,
+											drawingControl: true,
+											drawingControlOptions: {
+											  position: google.maps.ControlPosition.TOP_CENTER,
+											  drawingModes: [
+												google.maps.drawing.OverlayType.MARKER,
+												google.maps.drawing.OverlayType.POLYGON,
+												google.maps.drawing.OverlayType.POLYLINE,
+												google.maps.drawing.OverlayType.RECTANGLE
+											  ]
+											},
+											markerOptions: {draggable:true, raiseOnDrag:true}
+										  });
+									this.drawingManager.setMap(this.map);
+									google.maps.event.addListener(this.drawingManager, 'overlaycomplete', this.processDrawingObject.bind(this));
+								}
+							
+							},
+						processDrawingObject: function(e) {
+						
+							if (debug) { console.log('process map drawing object: ' + e.type); }
+							
+							var shape = new Shape();
+							var points = shape.get("points");
+							shape.set("mapShape", e.overlay);
+							
+							if (e.type == google.maps.drawing.OverlayType.MARKER) { 
+									var marker = e.overlay; 
+									marker.draggable = false; //No support for updating point data after dragging yet, so disabling dragging to avoid confusion.
+									shape.name = "POINT";		
+									points.add([{x:marker.getPosition().lng(), y:marker.getPosition().lat()}]); 
+								}
+							else if (e.type == google.maps.drawing.OverlayType.POLYGON) { 
+									var polygon = e.overlay;
+									shape.name = "POLYGON";
+									polygon.getPath().forEach(function(latlng,idx) { points.add([{x:latlng.lng(), y:latlng.lat()}]); }); 
+								}
+							else if (e.type == google.maps.drawing.OverlayType.POLYLINE) { 
+									var polyline = e.overlay; 
+									shape.name = "PATH";
+									polyline.getPath().forEach(function(latlng,idx) { points.add([{x:latlng.lng(), y:latlng.lat()}]); }); 
+								}
+							else if (e.type == google.maps.drawing.OverlayType.RECTANGLE) {
+									var rectangle = e.overlay; 
+									var bds = rectangle.getBounds();
+									var ne = bds.getNorthEast();
+									var sw = bds.getSouthWest();
+									shape.name = "RECTANGLE";
+									points.add([{y:ne.lat(), x:ne.lng()},
+												{y:ne.lat(), x:sw.lng()},
+												{y:sw.lat(), x:sw.lng()},
+												{y:sw.lat(), x:ne.lng()},
+												{y:ne.lat(), x:ne.lng()}]);
+								}
+
+							this.model.get("shapes").add(shape);
+
+							},
+						clearMap: function() {
+							if (debug) { console.log('clearing map objects'); }
+							console.log(this);
+							//Complete current shape
+							this.drawingManager.setDrawingMode(this.drawingManager.getDrawingMode());
+							// remove from the map control
+							this.model.get("shapes").each(function(shp) { 
+											shp.get("mapShape").setMap(null); 
+											shp.get("points").reset();
+										});
+							this.model.get("shapes").reset();
+							},
+						undoMap: function () {
+							if (debug) { console.log('clearing latest map object'); }
+							//Complete current shape
+							this.drawingManager.setDrawingMode(this.drawingManager.getDrawingMode());
+							//Pop last shape
+							var lastShape = this.model.get("shapes").pop();
+							// remove from the map control
+							if (lastShape) {
+								lastShape.get("mapShape").setMap(null);
+								lastShape.get("points").reset();
+							}
+						},
+						setLocation:function(location) {
+							this.map.panTo(location);
+							},
+						setViewport:function(viewport) {
+							this.map.fitBounds(viewport);
+						}
+							
+
+})
+
+var GoogleMapLocationView = Backbone.View.extend({
+						el:$('#map-search-value'),
+						initialize:function() {
+							this.mapSearch = null;
+							this.setUpMapSearch();
+							},
+						setUpMapSearch:function() {
+							if (this.mapSearch == null) {
+								this.mapSearch = new google.maps.places.SearchBox(this.el);
+								google.maps.event.addListener(this.mapSearch, 'places_changed', this.updateLocation.bind(this));
+								}
+							},
+						updateLocation:function() {
+							var places = this.mapSearch.getPlaces();
+							if (places.length) {
+								if (debug) { console.log('place changed to ' + places[0].geometry.location); }
+								this.trigger('locationChanged',places[0].geometry.location,places[0].geometry.viewport);
+							}
+							}
+});
+
+// outputs
+
+var OutputView = Backbone.View.extend({ 
+						el:$("#sidebar-output"),
+						initialize:function() { 
+							if (debug) { console.log('initialized outputview'); }
+							this.listenTo(this.model, 'change', this.render);
+							this.listenTo(this.model, 'change:shapes', this.modelChanged);
+							this.modelChanged();
+							},
+						events: {
+							"change input[type=radio]" : "changeOutputFormat",
+							"change textarea" : "userChangeCSV",
+							"keyup textarea" : "userEditCSV",
+							"select textarea" : "userSelectCSV"
+							},
+						render:function() {
+								if (debug) { console.log('rendering output view'); }
+								if (this.model.get("format") == "table") {
+									this.$("#output-type-table").attr("checked",true);
+									this.$("#output-table").html(this.createOutput());
+									this.$("#output-table").show();
+									this.$("#output-text").hide();
+								} else { 
+									this.$("#output-type-csv").attr("checked",true);
+									this.$("#output-text").text(this.createOutput());
+									this.$("#output-table").hide();
+									this.$("#output-text").show();
+								}
+							},
+						changeOutputFormat:function() {
+							if (debug) { console.log('changed output type'); }
+							this.model.set("format", this.$("input[name=output-type]:checked").val());
+							},
+						createOutput:function() {
+						
+							var fmt = this.model.get("format");
+							var mde = this.model.get("mode");
+							var useCustomScale = (this.model.get("scale").isCustomScale()) && (mde == "image");
+							var outputArray = new Array();
+							var header = new Array();
+							var output = "";
+																					
+							// create a header array
+							header.push("shape id");
+							header.push("point id");
+							if (mde == "image") {
+								header.push("x");
+								header.push("y");
+								if (useCustomScale) {
+									header.push("x2");
+									header.push("y2");
+								}
+							} else {
+								header.push("longitude");
+								header.push("latitude");
+							}
+							outputArray.push(header);
+
+							// now create row arrays
+							var shapes = this.model.get("shapes");
+							for (var s=0;s<shapes.length;s++) {
+								var points = shapes.at(s).get("points");
+								for (var p=0;p<points.length;p++) {
+									var row = new Array();
+									row.push(s);
+									row.push(p);
+									row.push(points.at(p).get("x"));
+									if (mde == "image") {
+										row.push(this.model.get("scale").get("height")-points.at(p).get("y"));
+									} else {
+										row.push(points.at(p).get("y"));
+									}
+									if (useCustomScale) {
+										var scale = this.model.get("scale");
+										var x2 = parseInt(scale.get("left")) + 
+													(points.at(p).get("x") / scale.get("width"))
+													* (scale.get("right") - scale.get("left"));
+										var y2 = parseInt(scale.get("top")) + 
+													(points.at(p).get("y") / scale.get("height"))
+													* (scale.get("bottom") - scale.get("top"));
+										row.push(x2.toFixed(4));
+										row.push(y2.toFixed(4));
+									}
+									outputArray.push(row);
+								}
+							}
+							
+							// output the text and return
+							for (var o=0; o<outputArray.length; o++) {
+								if (fmt == "csv") { output += outputArray[o].join(",") + '\r\n'; }
+								if (fmt == "table") { output += '<tr><td>' + outputArray[o].join("</td><td>") + '</td></tr>'; }
+							}
+							if (fmt == "table") { output = "<table>" + output + "</table>"; }
+								
+							return output;
+						}, 
+						modelChanged:function() {
+							if (debug) { console.log('model changed : resubscribing to shape change models'); }
+							this.listenTo(this.model.get("shapes"), 'change', this.render);
+							this.listenTo(this.model.get("shapes"), 'add', this.render);
+							this.listenTo(this.model.get("shapes"), 'remove', this.render);
+							this.listenTo(this.model.get("shapes"), 'reset', this.render);
+							this.render();
+							},
+						userChangeCSV:function() {
+							if (debug) { console.log('the CSV Value has changed'); }
+							},
+						userEditCSV:function() {
+							if (debug) { console.log('the CSV Value is being edited'); }
+							},
+						userSelectCSV:function() {
+							if (debug) { console.log('a part of the CSV Value has been selected'); }
+							
+							// find the selection and work out which points have been selected
+							// the action here is to hopefully highlight the points being edited
+							// so that they can be deleted. we need a way to parse the input
+							// and redraw the shapes
+							
+							var sel = this.$("#output-text").getSelection();
+							var allText = this.$("#output-text").val();
+							var allLines = allText.split(/\r\n|\n/g);
+							var lmtch1 = allText.substring(0,sel.start).match(/\n/gi);
+							var lmtch2 = allText.substring(0,sel.end).match(/\n/gi);
+							var lnum1 = (lmtch1) ? lmtch1.length : 0;
+							var lnum2 = (lmtch2) ? lmtch2.length : 0;
+							var selectedLines = allLines.slice(lnum1,lnum2+1);
+							
+							
+							
+							}
+});
+
+var ClipboardView = Backbone.View.extend({
+						el:$('#copy-clipboard-button'),
+						initialize:function() {
+							if (debug) { console.log('initializing clipboard'); }
+							if (debug) { console.log('moviePath: ' + this.model.get("moviePath")); }
+                            var id = '#' + this.el.id;
+							this.clip = new Clipboard(id, {
+                                text: function(trigger){
+                                    if (this.model.get("format") == "table") {
+                                        return $("#output-table").html();
+                                    } else {
+                                        return $("#output-text").val();
+                                    }
+                                }.bind(this)
+                            });
+							this.clip.on('success', this.copyContent.bind(this));
+							this.showButton.bind(this)();
+							},
+						render:function() {
+							},
+						showButton:function(client,args) {
+							if (debug) { console.log('clipboard has loaded'); }
+
+                            if(Clipboard.isSupported()){
+                                if (debug) { console.log('Clipboard supported in current browser, enabling copy button.'); }
+                                this.$el.show();
+                            }
+                            else {
+                                if (debug) { console.log('Clipboard not supported in current browser.'); }
+                            }
+							},
+						copyContent:function(client,args){
+							if (debug) { console.log('Copying to Clipboard'); }
+							this.$el.text("Copied!");
+							window.setTimeout(this.resetButton.bind(this), 1000);
+							},
+						resetButton:function() {
+							this.$el.text("Copy");
+							}
+});
+
+	
+// ************************************************************************************
+// Application :
+
+var debug = true;
+
+// create some global graphics objects
+// these should be in the canvas view buy at the moment they need to be scoped
+// globally as the shapes initialize function currently uses them. REFACTOR THIS DAVE!.
+var graphics = new jxGraphics(document.getElementById("drawing-canvas"));
+var redBrush = new jxBrush(new jxColor("red"));
+var blkBrush = new jxBrush(new jxColor("black"));
+var gryBrush = new jxBrush(new jxColor("grey"));
+var blkPen	 = new jxPen(new jxColor("black"),2);
+var gryPen	 = new jxPen(new jxColor("grey"),2);
+var redPen	 = new jxPen(new jxColor("red"),2);
+
+// required for Mapstraction
+// var microsoft_key = "AsCJquBpqVYuUbM6kOK5CCZcosV3o-AEsVU6Chie-E54gPovE26HuL3wcYtBe64O"
+var cloudmade_key = "76fb7601295a489ba885ef92f5481ebb";
+var cloudmade_styleId = 53589; //109095; //96931;
+
+// once the document is ready, fire up the app
+$(function(){
+	
+	console.log('startup');
+	
+	var appOpts = new AppOptions();
+	var app 	= new AppView({model:appOpts});
+
+	
+	
+	var isMac = navigator.platform.toUpperCase().indexOf('MAC')>=0;
+
+	console.log('dnd setup');
+	
+	// drag and drop 
+	var workspace = document.getElementById('workspace'),
+	    tests = {
+	      filereader: typeof FileReader != 'undefined',
+	      dnd: 'draggable' in document.createElement('span'),
+	      formdata: !!window.FormData,
+	    }, 
+	    support = {
+	      filereader: document.getElementById('filereader'),
+	      formdata: document.getElementById('formdata'),
+	    },
+	    acceptedTypes = {
+	      'image/png': true,
+	      'image/jpeg': true,
+	      'image/gif': true
+	    },
+	    fileupload = document.getElementById('upload');
+
+	"filereader formdata".split(' ').forEach(function (api) {
+	  if (tests[api] === false) {
+	    support[api].className = 'fail';
+	  } else {
+	    // FFS. I could have done el.hidden = true, but IE doesn't support
+	    // hidden, so I tried to create a polyfill that would extend the
+	    // Element.prototype, but then IE10 doesn't even give me access
+	    // to the Element object. Brilliant.
+	    support[api].className = 'hidden';
+	  }
+	});
+
+	if (tests.dnd) { 
+	  console.log('tests passed');
+	  workspace.ondragover = function () { this.className = 'hover'; return false; };
+	  workspace.ondragleave = function () { this.className = ''; return false; };
+	} else {
+	  console.log('tests failed');
+	  fileupload.className = 'hidden';
+	  fileupload.querySelector('input').onchange = function () {
+	    readfiles(this.files);
+	  };
+	}
+});
+
+// ************************************************************************************
+
+
+
+

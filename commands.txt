@@ -1,0 +1,8 @@
+1.netstat -a -n -o | find "5600"  
+
+2.curl localhost:5600 --data-binary "@C:\Users\Shiva Prasad\Desktop\5330051064_1094085697.dem\5330051064_1094085697.dem"
+
+
+
+
+"C:\Users\Shiva Prasad\Desktop\termination project\output files\testoutput1.txt"
